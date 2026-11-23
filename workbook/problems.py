@@ -9,6 +9,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 HISTOGRAM_BINS = 64
 HISTOGRAM_TILE = 1024
+COMPACTION_TILE = 256
 
 
 def ceil_div(size, tile):
@@ -61,6 +62,10 @@ class Problem:
         if self.key == "09":
             grid = (ceil_div(n, HISTOGRAM_TILE), 1, 1)
             return grid, {"BLOCK": HISTOGRAM_TILE, "BINS": HISTOGRAM_BINS}
+        if self.key == "12":
+            return (n, 1, 1), {"BLOCK": 256}
+        if self.key == "13":
+            return (ceil_div(n, COMPACTION_TILE), 1, 1), {"BLOCK": COMPACTION_TILE}
         columns = dims[1]
         return (n, 1, 1), {"BLOCK": 1 << (columns - 1).bit_length()}
 
@@ -204,6 +209,104 @@ def histogram_case(rng, n, distribution):
     return (labels,), (histogram_counts(labels),)
 
 
+def ragged_rmsnorm(x, residual, weights, lengths):
+    result = np.zeros_like(x)
+    for row, length in enumerate(lengths):
+        if length:
+            z = x[row, :length].astype(np.float64) + residual[row, :length]
+            result[row, :length] = z * weights[:length] / np.sqrt(np.mean(z * z) + 1e-5)
+    return result
+
+
+def rmsnorm_case(rng, rows, cols):
+    x = fixed(rng, (rows, cols))
+    residual = fixed(rng, (rows, cols))
+    weights = fixed(rng, cols)
+    lengths = rng.integers(0, cols + 1, size=rows, dtype=np.int32)
+    lengths[::4] = 0
+    lengths[1::4] = 1
+    lengths[2::4] = cols
+    residual[2::8] = -x[2::8]
+    invalid = np.arange(cols)[None, :] >= lengths[:, None]
+    x[invalid] = residual[invalid] = np.nan
+    return (x, residual, weights, lengths), (ragged_rmsnorm(x, residual, weights, lengths),)
+
+
+def masked_top2(scores, keep):
+    results = np.full((len(scores), 2), -np.inf, dtype=np.float32)
+    indices = np.full((len(scores), 2), -1, dtype=np.int32)
+    for row, (values, mask) in enumerate(zip(scores, keep)):
+        columns = np.flatnonzero(mask)
+        # Stable sort leaves smaller columns first on ties.
+        winners = columns[np.argsort(-values[columns], kind="stable")[:2]]
+        results[row, :len(winners)] = values[winners]
+        indices[row, :len(winners)] = winners
+    return results, indices
+
+
+def top2_case(rng, rows, cols):
+    scores = fixed(rng, (rows, cols)) - 32
+    keep = rng.integers(0, 2, size=(rows, cols), dtype=np.int32)
+    keep[::5] = 0
+    keep[1::5] = 0
+    keep[1::5, -1] = 1
+    keep[2::5] = 1
+    scores[2::5] = -2
+    keep[3::5, [0, cols // 2, cols - 1]] = 1
+    scores[3::5, [0, cols // 2, cols - 1]] = 50
+    scores[keep == 0] = np.nan
+    return (scores, keep), masked_top2(scores, keep)
+
+
+def csr_spmv(offsets, columns, weights, vector):
+    result = np.empty(offsets.size - 1, dtype=np.float32)
+    for row, (first, last) in enumerate(zip(offsets, offsets[1:])):
+        result[row] = np.dot(weights[first:last].astype(np.float64), vector[columns[first:last]])
+    return result
+
+
+def csr_case(rng, rows, cols):
+    lengths = rng.integers(0, min(cols, 40) + 1, size=rows, dtype=np.int32)
+    if cols:
+        for row, size in enumerate((0, 1, 31, 257, 4097)[:rows]):
+            lengths[row] = size if size <= cols + 2 else min(size, cols)
+    offsets = np.empty(rows + 1, dtype=np.int32)
+    offsets[0] = 0
+    np.cumsum(lengths, out=offsets[1:])
+    columns = rng.integers(0, max(cols, 1), size=int(offsets[-1]), dtype=np.int32)
+    weights = fixed(rng, columns.shape)
+    vector = fixed(rng, cols)
+    return (offsets, columns, weights, vector), (csr_spmv(offsets, columns, weights, vector),)
+
+
+def stable_compact(source):
+    positions = np.flatnonzero(source > 0)
+    values = np.zeros_like(source)
+    indices = np.full_like(source, -1)
+    values[:len(positions)] = source[positions]
+    indices[:len(positions)] = positions
+    return values, indices, np.array([len(positions)], dtype=np.int32)
+
+
+def compaction_counts(source):
+    start = np.arange(0, source.size, COMPACTION_TILE)
+    return np.add.reduceat((source > 0).astype(np.int32), start, dtype=np.int32)
+
+
+def compaction_case(rng, n, distribution):
+    source = rng.integers(-8, 9, size=n, dtype=np.int32)
+    if distribution == 1:
+        source[:] = 7
+    elif distribution == 2:
+        source[:] = 0
+        source[::2] = -2_147_483_648
+    elif distribution == 3:
+        source[:COMPACTION_TILE] = -1
+        source[COMPACTION_TILE:2 * COMPACTION_TILE] = 9
+        source[::113] = 2_147_483_647
+    return (source,), stable_compact(source)
+
+
 PROBLEMS = {
     problem.key: problem
     for problem in (
@@ -227,5 +330,13 @@ PROBLEMS = {
                 ((0, 2), (4, 1), (9, 17), (11, 33), (7, 257), (8, 1025), (8, 4096))),
         Problem("09", "tiled-histogram", "Two-stage tiled histogram", histogram_case,
                 ((0, 0), (1, 1), (33, 2), (1023, 0), (1024, 1), (1025, 0), (65567, 3), (1048577, 3))),
+        Problem("10", "ragged-rmsnorm", "Ragged residual RMSNorm", rmsnorm_case,
+                ((0, 7), (4, 1), (4, 17), (8, 255), (7, 257), (8, 1025), (5, 4095), (9, 4096))),
+        Problem("11", "masked-top2", "Stable masked top-2", top2_case,
+                ((0, 7), (5, 1), (9, 2), (9, 31), (11, 33), (9, 257), (9, 1025), (9, 4096))),
+        Problem("12", "csr-spmv", "CSR matrix-vector multiply", csr_case,
+                ((0, 0), (4, 0), (1, 1), (6, 7), (23, 127), (25, 257), (257, 8191))),
+        Problem("13", "stable-compaction", "Stable positive-value compaction", compaction_case,
+                ((0, 0), (1, 1), (31, 2), (255, 1), (256, 0), (257, 3), (65537, 3), (262145, 3), (1048576, 3))),
     )
 }

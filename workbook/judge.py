@@ -11,7 +11,7 @@ import sys
 import numpy as np
 
 from workbook.cuda import Device, GpuError, Int, Nvrtc, Ptr
-from workbook.problems import HISTOGRAM_BINS, PROBLEMS, ROOT, partial_histogram
+from workbook.problems import HISTOGRAM_BINS, PROBLEMS, ROOT, compaction_counts, partial_histogram
 
 
 TRITON_TYPES = {np.dtype("float32"): "*fp32", np.dtype("int32"): "*i32"}
@@ -91,6 +91,8 @@ def run_case(device, kernel, problem, case):
         return (run_sum(device, kernel, problem, case.inputs[0]),)
     if problem.key == "09":
         return (run_histogram(device, kernel, problem, case.inputs[0]),)
+    if problem.key == "13":
+        return run_compaction(device, kernel, problem, case.inputs[0])
     outputs = tuple(np.empty_like(array) for array in case.expected)
     grid, constants = problem.launch_config(case.dims)
     if not prod(grid):
@@ -152,11 +154,54 @@ def run_histogram(device, kernel, problem, labels):
     return histogram
 
 
+def run_compaction(device, kernel, problem, source):
+    values = np.empty_like(source)
+    indices = np.empty_like(source)
+    total = np.zeros(1, dtype=np.int32)
+    if not source.size:
+        return values, indices, total
+
+    grid, constants = problem.launch_config((source.size,))
+    tiles = grid[0]
+    counts = np.empty(tiles, dtype=np.int32)
+    offsets = np.empty_like(counts)
+    arrays = (source, counts, offsets, total, values, indices)
+    with ExitStack() as resources:
+        data, d_counts, d_offsets, d_total, d_values, d_indices = [
+            resources.enter_context(device.buffer(array, upload=index == 0))
+            for index, array in enumerate(arrays)
+        ]
+        kernel.launch(grid, [data, d_counts], (source.size,), constants, (source, counts))
+        kernel.launch((1, 1, 1), [d_counts, d_offsets, d_total], (tiles,),
+                      {"TILE_COUNT": 1 << (tiles - 1).bit_length()}, (counts, offsets, total), entry="scan")
+        device.synchronize()
+        device.read(d_counts, counts)
+        device.read(d_offsets, offsets)
+        device.read(d_total, total)
+        expected_counts = compaction_counts(source)
+        expected_offsets = np.cumsum(expected_counts, dtype=np.int32) - expected_counts
+        np.testing.assert_array_equal(counts, expected_counts, err_msg="Incorrect compaction tile counts")
+        np.testing.assert_array_equal(offsets, expected_offsets, err_msg="Incorrect compaction offsets")
+        np.testing.assert_array_equal(total, [expected_counts.sum()], err_msg="Incorrect compaction total")
+
+        # Validate the plan before allowing it to determine output addresses.
+        kernel.launch(grid, [data, d_offsets, d_total, d_values, d_indices], (source.size,), constants,
+                      (source, offsets, total, values, indices), entry="scatter")
+        device.synchronize()
+        device.read(d_values, values)
+        device.read(d_indices, indices)
+    return values, indices, total
+
+
 def compare(problem, case, actual):
+    if len(actual) != len(case.expected):
+        raise AssertionError(f"Expected {len(case.expected)} outputs, got {len(actual)}.")
     for result, expected in zip(actual, case.expected):
-        if problem.key == "08":
+        if result.shape != expected.shape or result.dtype != expected.dtype:
+            raise AssertionError(f"Expected output {expected.shape} {expected.dtype}, got {result.shape} {result.dtype}.")
+        if problem.key in {"08", "10"}:
             # Masked outputs are part of the exact contract, not a tolerance test.
-            lengths = case.inputs[1]
+            lengths = case.inputs[-1]
             inactive = np.arange(result.shape[1])[None, :] >= lengths[:, None]
             np.testing.assert_array_equal(result[inactive], 0)
             np.testing.assert_allclose(result, expected, atol=1e-6, rtol=4e-5)

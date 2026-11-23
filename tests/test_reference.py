@@ -6,8 +6,9 @@ import numpy as np
 
 from workbook.judge import compare
 from workbook.problems import (
-    PROBLEMS, Case, halo_blur, hierarchical_sum, histogram_counts, masked_softmax,
-    partial_histogram, pitched_transpose, row_argmax, strided_affine, warp_prefix, warp_vote,
+    PROBLEMS, Case, compaction_counts, csr_spmv, halo_blur, hierarchical_sum, histogram_counts,
+    masked_softmax, masked_top2, partial_histogram, pitched_transpose, ragged_rmsnorm,
+    row_argmax, stable_compact, strided_affine, warp_prefix, warp_vote,
 )
 
 
@@ -59,6 +60,43 @@ class ReferenceTests(unittest.TestCase):
         expected[7] = [1024, 1]
         expected[11] = [0, 2]
         np.testing.assert_array_equal(partial_histogram(labels), expected)
+
+    def test_rmsnorm_ignores_nan_padding_and_empty_rows(self):
+        x = np.array([[1, 2, np.nan], [np.nan] * 3], dtype=np.float32)
+        residual = np.array([[2, 2, np.nan], [np.nan] * 3], dtype=np.float32)
+        weights = np.array([1, 2, 9], dtype=np.float32)
+        result = ragged_rmsnorm(x, residual, weights, np.array([2, 0], dtype=np.int32))
+        np.testing.assert_allclose(result[0], np.array([3, 8, 0]) / np.sqrt(12.5 + 1e-5), atol=1e-7)
+        np.testing.assert_array_equal(result[1], [0, 0, 0])
+
+    def test_masked_top2_returns_distinct_stable_columns_and_missing_values(self):
+        scores = np.array([[5, 9, 5, 5], [-2, 1, 0, 0], [1, 1, 1, 1]], dtype=np.float32)
+        mask = np.array([[1, 0, 1, 1], [1, 0, 0, 0], [0, 0, 0, 0]], dtype=np.int32)
+        values, indices = masked_top2(scores, mask)
+        np.testing.assert_array_equal(values, [[5, 5], [-2, -np.inf], [-np.inf, -np.inf]])
+        np.testing.assert_array_equal(indices, [[0, 2], [0, -1], [-1, -1]])
+
+    def test_csr_counts_duplicate_columns_and_empty_rows(self):
+        inputs = (np.array([0, 3, 3, 4]), np.array([2, 0, 2, 1]),
+                  np.array([2, 1, -1, 4], dtype=np.float32), np.array([3, 5, 7], dtype=np.float32))
+        np.testing.assert_array_equal(csr_spmv(*inputs), [10, 0, 20])
+
+    def test_compaction_preserves_original_indices_and_fills_tail(self):
+        source = np.array([-2, 7, 0, 7, -1, 3], dtype=np.int32)
+        values, indices, total = stable_compact(source)
+        np.testing.assert_array_equal(values, [7, 7, 3, 0, 0, 0])
+        np.testing.assert_array_equal(indices, [1, 3, 5, -1, -1, -1])
+        np.testing.assert_array_equal(total, [3])
+        np.testing.assert_array_equal(compaction_counts(np.array([0] * 255 + [1, 1, 1], dtype=np.int32)), [1, 2])
+
+    def test_judge_validates_output_count_and_dtype(self):
+        problem = PROBLEMS["06"]
+        case = next(case for case in problem.cases() if case.dims == (1, 1))
+        values, indices = case.expected
+        with self.assertRaisesRegex(AssertionError, "outputs"):
+            compare(problem, case, (values,))
+        with self.assertRaisesRegex(AssertionError, "dtype|int32"):
+            compare(problem, case, (values, indices.astype(np.int64)))
 
     def test_judge_rejects_nonzero_mask_even_inside_numeric_tolerance(self):
         source, lengths = np.array([[0, np.nan]], dtype=np.float32), np.array([1], dtype=np.int32)
