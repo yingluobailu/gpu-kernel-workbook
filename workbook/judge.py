@@ -11,7 +11,7 @@ import sys
 import numpy as np
 
 from workbook.cuda import Device, GpuError, Int, Nvrtc, Ptr
-from workbook.problems import PROBLEMS, ROOT
+from workbook.problems import HISTOGRAM_BINS, PROBLEMS, ROOT, partial_histogram
 
 
 TRITON_TYPES = {np.dtype("float32"): "*fp32", np.dtype("int32"): "*i32"}
@@ -21,10 +21,13 @@ class CudaKernel:
     def __init__(self, device, problem, path):
         self.device = device
         self.block = problem.cuda_block
-        self.function = device.function(Nvrtc(device.capability).compile(path), "solve")
+        self.module = device.load(Nvrtc(device.capability).compile(path))
+        self.functions = {}
 
-    def launch(self, grid, pointers, dims, constants, arrays):
-        self.device.launch(self.function, grid, self.block, 0, [*pointers, *map(Int, dims)])
+    def launch(self, grid, pointers, dims, constants, arrays, *, entry="solve"):
+        if entry not in self.functions:
+            self.functions[entry] = self.device.function(self.module, entry)
+        self.device.launch(self.functions[entry], grid, self.block, 0, [*pointers, *map(Int, dims)])
 
 
 class TritonKernel:
@@ -45,7 +48,7 @@ class TritonKernel:
             raise GpuError("The Triton submission must be a Python source file.")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        self.kernel = module.solve
+        self.submission = module
         self.compile = triton.compile
         self.source = ASTSource
         self.target = GPUTarget("cuda", device.capability, 32)
@@ -53,20 +56,22 @@ class TritonKernel:
         self.warps = problem.triton_warps
         self.binaries = {}
 
-    def launch(self, grid, pointers, dims, constants, arrays):
+    def launch(self, grid, pointers, dims, constants, arrays, *, entry="solve"):
         types = tuple(TRITON_TYPES[array.dtype] for array in arrays) + ("i32",) * len(dims)
-        key = types, tuple(constants.items())
+        key = entry, types, tuple(constants.items())
         if key not in self.binaries:
+            kernel = getattr(self.submission, entry)
             parameters = (*types, *("constexpr",) * len(constants))
-            if len(parameters) != len(self.kernel.arg_names):
-                raise GpuError("Triton solve() does not match the problem signature.")
-            signature = dict(zip(self.kernel.arg_names, parameters))
-            source = self.source(self.kernel, signature, constexprs=constants)
+            if len(parameters) != len(kernel.arg_names):
+                raise GpuError(f"Triton {entry}() does not match the problem signature.")
+            signature = dict(zip(kernel.arg_names, parameters))
+            source = self.source(kernel, signature, constexprs=constants)
             try:
                 binary = self.compile(source, target=self.target, options={"num_warps": self.warps})
             except Exception as error:
                 raise GpuError(f"Triton compilation failed: {error}") from error
-            function = self.device.function(binary.asm["cubin"], binary.name)
+            module = self.device.load(binary.asm["cubin"])
+            function = self.device.function(module, binary.name)
             self.binaries[key] = function, binary.metadata
         function, metadata = self.binaries[key]
         with ExitStack() as scratch:
@@ -84,6 +89,8 @@ class TritonKernel:
 def run_case(device, kernel, problem, case):
     if problem.key == "07":
         return (run_sum(device, kernel, problem, case.inputs[0]),)
+    if problem.key == "09":
+        return (run_histogram(device, kernel, problem, case.inputs[0]),)
     outputs = tuple(np.empty_like(array) for array in case.expected)
     grid, constants = problem.launch_config(case.dims)
     if not prod(grid):
@@ -121,6 +128,28 @@ def run_sum(device, kernel, problem, source):
             if output.size == 1:
                 return output
             previous, source = current, output
+
+
+def run_histogram(device, kernel, problem, labels):
+    if not labels.size:
+        return np.zeros(HISTOGRAM_BINS, dtype=np.int32)
+    grid, constants = problem.launch_config((labels.size,))
+    tiles = grid[0]
+    partials = np.empty((HISTOGRAM_BINS, tiles), dtype=np.int32)
+    histogram = np.empty(HISTOGRAM_BINS, dtype=np.int32)
+    with (
+        device.buffer(labels, upload=True) as source,
+        device.buffer(partials) as intermediate,
+        device.buffer(histogram) as output,
+    ):
+        kernel.launch(grid, [source, intermediate], (labels.size, tiles), constants, (labels, partials))
+        kernel.launch((HISTOGRAM_BINS, 1, 1), [intermediate, output], (tiles,),
+                      {"TILE_COUNT": 1 << (tiles - 1).bit_length()}, (partials, histogram), entry="merge")
+        device.synchronize()
+        device.read(intermediate, partials)
+        device.read(output, histogram)
+    np.testing.assert_array_equal(partials, partial_histogram(labels), err_msg="Incorrect per-tile histogram")
+    return histogram
 
 
 def compare(problem, case, actual):

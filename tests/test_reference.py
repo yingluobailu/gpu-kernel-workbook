@@ -6,8 +6,8 @@ import numpy as np
 
 from workbook.judge import compare
 from workbook.problems import (
-    PROBLEMS, Case, halo_blur, hierarchical_sum, masked_softmax, pitched_transpose,
-    row_argmax, strided_affine, warp_prefix, warp_vote,
+    PROBLEMS, Case, halo_blur, hierarchical_sum, histogram_counts, masked_softmax,
+    partial_histogram, pitched_transpose, row_argmax, strided_affine, warp_prefix, warp_vote,
 )
 
 
@@ -46,6 +46,19 @@ class ReferenceTests(unittest.TestCase):
         values = np.array([[1000, 1000, np.nan], [np.nan] * 3], dtype=np.float32)
         lengths = np.array([2, 0], dtype=np.int32)
         np.testing.assert_array_equal(masked_softmax(values, lengths), [[.5, .5, 0], [0, 0, 0]])
+
+    def test_histogram_ignores_invalid_labels_and_preserves_extreme_bins(self):
+        labels = np.array([0, 0, -1, 64, 63, -2_147_483_648], dtype=np.int32)
+        expected = np.zeros(64, dtype=np.int32)
+        expected[0], expected[63] = 2, 1
+        np.testing.assert_array_equal(histogram_counts(labels), expected)
+
+    def test_tiled_histogram_layout_keeps_the_last_partial(self):
+        labels = np.array([7] * 1024 + [11, 7, 11], dtype=np.int32)
+        expected = np.zeros((64, 2), dtype=np.int32)
+        expected[7] = [1024, 1]
+        expected[11] = [0, 2]
+        np.testing.assert_array_equal(partial_histogram(labels), expected)
 
     def test_judge_rejects_nonzero_mask_even_inside_numeric_tolerance(self):
         source, lengths = np.array([[0, np.nan]], dtype=np.float32), np.array([1], dtype=np.int32)

@@ -93,11 +93,15 @@ class Device:
             detail = description.value or b"no description"
             raise GpuError(f"{operation}: {error.decode()} ({code}): {detail.decode()}")
 
-    def function(self, cubin, name):
-        module, function = Handle(), Handle()
+    def load(self, cubin):
+        module = Handle()
         image = c.create_string_buffer(cubin)
         self.check(self.module_load(c.byref(module), image), "Load GPU binary")
         self.stack.callback(self.module_unload, module)
+        return module
+
+    def function(self, module, name):
+        function = Handle()
         self.check(self.get_function(c.byref(function), module, name.encode()), f"Find kernel {name}")
         return function
 

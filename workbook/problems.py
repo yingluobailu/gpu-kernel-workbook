@@ -7,6 +7,8 @@ import numpy as np
 
 
 ROOT = Path(__file__).resolve().parent.parent
+HISTOGRAM_BINS = 64
+HISTOGRAM_TILE = 1024
 
 
 def ceil_div(size, tile):
@@ -56,6 +58,9 @@ class Problem:
             return (ceil_div(n, groups * 32), 1, 1), {"GROUPS": groups}
         if self.key == "07":
             return (ceil_div(n, 512), 1, 1), {"BLOCK": 512}
+        if self.key == "09":
+            grid = (ceil_div(n, HISTOGRAM_TILE), 1, 1)
+            return grid, {"BLOCK": HISTOGRAM_TILE, "BINS": HISTOGRAM_BINS}
         columns = dims[1]
         return (n, 1, 1), {"BLOCK": 1 << (columns - 1).bit_length()}
 
@@ -173,6 +178,32 @@ def softmax_case(rng, rows, cols):
     return (src, lengths), (masked_softmax(src, lengths),)
 
 
+def histogram_counts(labels):
+    valid = labels[(labels >= 0) & (labels < HISTOGRAM_BINS)]
+    return np.bincount(valid, minlength=HISTOGRAM_BINS).astype(np.int32)
+
+
+def partial_histogram(labels):
+    counts = np.empty((HISTOGRAM_BINS, ceil_div(labels.size, HISTOGRAM_TILE)), dtype=np.int32)
+    for tile, start in enumerate(range(0, labels.size, HISTOGRAM_TILE)):
+        counts[:, tile] = histogram_counts(labels[start:start + HISTOGRAM_TILE])
+    return counts
+
+
+def histogram_case(rng, n, distribution):
+    labels = rng.integers(-4, HISTOGRAM_BINS + 4, size=n, dtype=np.int32)
+    if distribution == 1:
+        labels[:] = HISTOGRAM_BINS - 1
+    elif distribution == 2:
+        labels[:] = -1
+        labels[::2] = HISTOGRAM_BINS
+    elif distribution == 3:
+        labels[rng.random(n) < .96] = 17
+        labels[::97] = -2_147_483_648
+        labels[1::97] = 2_147_483_647
+    return (labels,), (histogram_counts(labels),)
+
+
 PROBLEMS = {
     problem.key: problem
     for problem in (
@@ -194,5 +225,7 @@ PROBLEMS = {
                 ((0,), (1,), (33,), (511,), (512,), (513,), (262145,), (1048577,))),
         Problem("08", "masked-softmax", "Stable prefix-masked softmax", softmax_case,
                 ((0, 2), (4, 1), (9, 17), (11, 33), (7, 257), (8, 1025), (8, 4096))),
+        Problem("09", "tiled-histogram", "Two-stage tiled histogram", histogram_case,
+                ((0, 0), (1, 1), (33, 2), (1023, 0), (1024, 1), (1025, 0), (65567, 3), (1048577, 3))),
     )
 }
