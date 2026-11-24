@@ -17,20 +17,27 @@ from workbook.problems import HISTOGRAM_BINS, PROBLEMS, ROOT, compaction_counts,
 TRITON_TYPES = {np.dtype("float32"): "*fp32", np.dtype("int32"): "*i32"}
 
 
-class CudaKernel:
+class Kernel:
+    def launch(self, grid, pointers, dims, constants, arrays, *, entry="solve"):
+        with ExitStack() as resources:
+            launch = self.prepare(resources, grid, pointers, dims, constants, arrays, entry=entry)
+            self.device.launch(*launch)
+
+
+class CudaKernel(Kernel):
     def __init__(self, device, problem, path):
         self.device = device
         self.block = problem.cuda_block
         self.module = device.load(Nvrtc(device.capability).compile(path))
         self.functions = {}
 
-    def launch(self, grid, pointers, dims, constants, arrays, *, entry="solve"):
+    def prepare(self, resources, grid, pointers, dims, constants, arrays, *, entry="solve"):
         if entry not in self.functions:
             self.functions[entry] = self.device.function(self.module, entry)
-        self.device.launch(self.functions[entry], grid, self.block, 0, [*pointers, *map(Int, dims)])
+        return self.functions[entry], grid, self.block, 0, [*pointers, *map(Int, dims)]
 
 
-class TritonKernel:
+class TritonKernel(Kernel):
     def __init__(self, device, problem, path):
         try:
             import triton
@@ -56,7 +63,7 @@ class TritonKernel:
         self.warps = problem.triton_warps
         self.binaries = {}
 
-    def launch(self, grid, pointers, dims, constants, arrays, *, entry="solve"):
+    def prepare(self, resources, grid, pointers, dims, constants, arrays, *, entry="solve"):
         types = tuple(TRITON_TYPES[array.dtype] for array in arrays) + ("i32",) * len(dims)
         key = entry, types, tuple(constants.items())
         if key not in self.binaries:
@@ -74,16 +81,13 @@ class TritonKernel:
             function = self.device.function(module, binary.name)
             self.binaries[key] = function, binary.metadata
         function, metadata = self.binaries[key]
-        with ExitStack() as scratch:
-            memory = Ptr(0)
-            if metadata.global_scratch_size:
-                count = metadata.global_scratch_size * prod(grid)
-                memory = scratch.enter_context(self.device.buffer(np.empty(count, dtype=np.uint8)))
-            # The NVIDIA Triton 3.3 launcher appends an optional global-scratch pointer.
-            self.device.launch(function, grid, (metadata.num_warps * 32, 1, 1), metadata.shared,
-                               [*pointers, *map(Int, dims), memory])
-            if metadata.global_scratch_size:
-                self.device.synchronize()
+        memory = Ptr(0)
+        if metadata.global_scratch_size:
+            count = metadata.global_scratch_size * prod(grid)
+            memory = resources.enter_context(self.device.buffer(np.empty(count, dtype=np.uint8)))
+            resources.callback(self.device.synchronize)
+        # The NVIDIA Triton 3.3 launcher appends an optional global-scratch pointer.
+        return function, grid, (metadata.num_warps * 32, 1, 1), metadata.shared, [*pointers, *map(Int, dims), memory]
 
 
 def run_case(device, kernel, problem, case):

@@ -123,9 +123,9 @@ class Device:
         if output.nbytes:
             self.check(self.download(output.ctypes.data, pointer, output.nbytes), "Read kernel output")
 
-    def launch(self, function, grid, block, shared, arguments):
+    def launch(self, function, grid, block, shared, arguments, *, stream=None):
         pointers = (Handle * len(arguments))(*(c.cast(c.byref(value), Handle) for value in arguments))
-        self.check(self.run(function, *grid, *block, shared, None, pointers, None), "Launch GPU kernel")
+        self.check(self.run(function, *grid, *block, shared, stream, pointers, None), "Launch GPU kernel")
 
     def synchronize(self):
         self.check(self.wait(), "Synchronize GPU kernel")

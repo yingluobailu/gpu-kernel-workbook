@@ -38,6 +38,17 @@ python -m workbook.judge check all --backend cuda
 python -m unittest discover -s tests -v
 ```
 
+## 性能实验 · Performance lab
+
+同一道题通过评测后，可以继续测它在真实 GPU 上的表现。四组实验分别改变访存步长、矩阵行跨度、图像长宽比和 Softmax 行宽。每组使用三种输入形状，支持 CUDA、Triton 和自己的答案。
+
+```sh
+python -m workbook.bench all
+python -m workbook.bench pitch --backend cuda --submission labs/transpose_direct.cu
+```
+
+[进入实验手册，复现分块转置与直接写回的对照](labs/README.md)
+
 ## 提交自己的实现
 
 先读题面并按缓冲区、标量和编译期参数顺序编写 `solve`。CUDA 入口声明为 `extern "C" __global__ void solve(...)`，Triton 入口使用 `@triton.jit`。多阶段题的同一文件还需提供题面列出的入口。输出缓冲区由判题器分配，所有数组在设备侧按行连续，题目 02 的 padding 由显式 `pitch` 表示。
