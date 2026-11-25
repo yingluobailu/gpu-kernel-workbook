@@ -66,6 +66,12 @@ class Problem:
             return (n, 1, 1), {"BLOCK": 256}
         if self.key == "13":
             return (ceil_div(n, COMPACTION_TILE), 1, 1), {"BLOCK": COMPACTION_TILE}
+        if self.key == "14":
+            return (ceil_div(dims[1], 16), ceil_div(n, 16), 1), {"TILE": 16}
+        if self.key == "15":
+            return (n, 1, 1), {"BLOCK": 128}
+        if self.key == "16":
+            return (n, 1, 1), {"TOKENS": 32}
         columns = dims[1]
         return (n, 1, 1), {"BLOCK": 1 << (columns - 1).bit_length()}
 
@@ -307,6 +313,68 @@ def compaction_case(rng, n, distribution):
     return (source,), stable_compact(source)
 
 
+def biased_relu_gemm(a, b, bias):
+    return np.maximum(a.astype(np.float64) @ b + bias, 0).astype(np.float32)
+
+
+def gemm_case(rng, m, n, k):
+    a = rng.integers(-8, 9, size=(m, k)).astype(np.float32) / 4
+    b = rng.integers(-8, 9, size=(k, n)).astype(np.float32) / 4
+    bias = rng.integers(-8, 9, size=n).astype(np.float32) / 4
+    return (a, b, bias), (biased_relu_gemm(a, b, bias),)
+
+
+def int4_case(rng, rows, width, group_size):
+    words = ceil_div(width, 8)
+    groups = ceil_div(width, group_size)
+    # Independent oracle uses dense codes before packing; unused nibbles are set to 15.
+    codes = rng.integers(0, 16, (rows, width), dtype=np.uint32)
+    padded = np.full((rows, words * 8), 15, dtype=np.uint32)
+    padded[:, :width] = codes
+    shifts = np.arange(0, 32, 4, dtype=np.uint32)
+    packed = np.bitwise_or.reduce(padded.reshape(rows, words, 8) << shifts, axis=2).view(np.int32)
+    zeros = rng.integers(0, 16, (rows, groups), dtype=np.int32)
+    scales = rng.integers(1, 9, (rows, groups)).astype(np.float32) / 8
+    vector = rng.integers(-8, 9, width).astype(np.float32) / 4
+    group = np.arange(width) // group_size
+    weights = (codes.astype(np.float64) - zeros[:, group]) * scales[:, group]
+    return (packed, scales, zeros, vector), ((weights @ vector).astype(np.float32),)
+
+
+def decode_attention(query, keys, values, lengths):
+    output = np.zeros_like(query)
+    for head, length in enumerate(lengths):
+        if length:
+            scores = keys[head, :length].astype(np.float64) @ query[head] / np.sqrt(32.)
+            weights = np.exp(scores - scores.max())
+            output[head] = weights @ values[head, :length] / weights.sum()
+    return output
+
+
+def decode_case(rng, heads, capacity):
+    query = fixed(rng, (heads, 32)) / 8
+    keys = fixed(rng, (heads, capacity, 32)) / 8
+    values = fixed(rng, (heads, capacity, 32)) / 8
+    pattern = (0, 1, capacity, 31, 32, 33, capacity)
+    lengths = np.array([min(capacity, pattern[h % len(pattern)]) for h in range(heads)], dtype=np.int32)
+    for head, length in enumerate(lengths):
+        if head % 7 == 2 and length:
+            # The last token changes the running maximum; earlier mass still matters.
+            query[head] = 0
+            query[head, 0] = 8
+            keys[head, :length, 0] = 1020
+            keys[head, length - 1, 0] = 1024
+        if head % 7 == 3:
+            query[head] = 0  # Equal scores should average all valid value vectors.
+        if head % 7 == 6:
+            query[head] = 0
+            query[head, 0] = 8
+            keys[head, :length, 0] -= 1024  # Unshifted exponentials underflow.
+        keys[head, length:] = np.nan
+        values[head, length:] = np.nan
+    return (query, keys, values, lengths), (decode_attention(query, keys, values, lengths),)
+
+
 PROBLEMS = {
     problem.key: problem
     for problem in (
@@ -338,5 +406,14 @@ PROBLEMS = {
                 ((0, 0), (4, 0), (1, 1), (6, 7), (23, 127), (25, 257), (257, 8191))),
         Problem("13", "stable-compaction", "Stable positive-value compaction", compaction_case,
                 ((0, 0), (1, 1), (31, 2), (255, 1), (256, 0), (257, 3), (65537, 3), (262145, 3), (1048576, 3))),
+        Problem("14", "bias-relu-gemm", "Tiled GEMM with column bias and ReLU", gemm_case,
+                ((0, 7, 3), (5, 0, 9), (3, 7, 0), (1, 1, 1), (15, 17, 16),
+                 (17, 31, 33), (63, 65, 127), (129, 97, 257)), cuda_block=(16, 16, 1)),
+        Problem("15", "packed-int4-gemv", "Groupwise packed INT4 GEMV", int4_case,
+                ((0, 17, 3), (5, 0, 7), (3, 1, 1), (7, 8, 3), (9, 9, 7),
+                 (13, 127, 19), (17, 257, 32), (23, 1025, 63)), cuda_block=(128, 1, 1)),
+        Problem("16", "streaming-decode", "Prefix-limited streaming decode attention", decode_case,
+                ((0, 11), (4, 0), (7, 1), (7, 31), (7, 32), (7, 33), (9, 129), (14, 513)),
+                cuda_block=(32, 1, 1)),
     )
 }

@@ -209,6 +209,9 @@ def compare(problem, case, actual):
             inactive = np.arange(result.shape[1])[None, :] >= lengths[:, None]
             np.testing.assert_array_equal(result[inactive], 0)
             np.testing.assert_allclose(result, expected, atol=1e-6, rtol=4e-5)
+        elif problem.key == "16":
+            np.testing.assert_array_equal(result[case.inputs[-1] == 0], 0)
+            np.testing.assert_allclose(result, expected, atol=3e-5, rtol=1e-4)
         elif problem.key == "07":
             np.testing.assert_allclose(result, expected, atol=1e-4, rtol=1e-6)
         else:
