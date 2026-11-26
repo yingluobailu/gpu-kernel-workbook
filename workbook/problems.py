@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 HISTOGRAM_BINS = 64
 HISTOGRAM_TILE = 1024
 COMPACTION_TILE = 256
+DEFAULT_SEED = 343
 
 
 def ceil_div(size, tile):
@@ -41,10 +42,16 @@ class Problem:
     def path(self):
         return ROOT / "problems" / f"{self.key}-{self.slug}"
 
+    def case(self, number, seed=DEFAULT_SEED):
+        if not 1 <= number <= len(self.shapes):
+            raise ValueError(f"Case number must be between 1 and {len(self.shapes)}.")
+        dims = self.shapes[number - 1]
+        inputs, outputs = self.case_factory(np.random.default_rng(seed + number - 1), *dims)
+        return Case(dims, inputs, outputs)
+
     def cases(self):
-        for index, dims in enumerate(self.shapes):
-            inputs, outputs = self.case_factory(np.random.default_rng(343 + index), *dims)
-            yield Case(dims, inputs, outputs)
+        for number in range(1, len(self.shapes) + 1):
+            yield self.case(number)
 
     def launch_config(self, dims):
         """Return the logical grid and Triton constexpr parameters."""

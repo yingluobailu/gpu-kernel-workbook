@@ -52,6 +52,28 @@ python -m workbook.bench pitch --backend cuda --submission labs/transpose_direct
 
 [进入实验手册，复现分块转置与直接写回的对照](labs/README.md)
 
+## 从空白答案开始
+
+在仓库根目录运行 `start`，生成只含必需函数签名的练习文件，再按题面实现。以下命令以第 13 题为例，模板包含计数、扫描和写回三个入口。重复运行会保留已经写过的文件。用 `--dir` 可选择另一个练习目录。
+
+```sh
+python -m workbook.judge start 13 --backend cuda
+python -m workbook.judge cases 13
+python -m workbook.judge check 13 --backend cuda --submission submissions/13-stable-compaction.cu
+```
+
+Triton 使用相同的流程，把 `start` 的后端改为 `triton` 即可生成 Python 文件。生成模板和查看用例只需要 Python 与 NumPy。
+
+### 复现一次失败
+
+用例编号从 1 开始。`cases` 按题面顺序列出形状和参数。第 13 题的第 6 例有 257 个元素，刚好跨过一个 256 元素的块。下列命令只生成并运行这一例。
+
+```sh
+python -m workbook.judge check 13 --backend cuda --submission submissions/13-stable-compaction.cu --case 6 --seed 2026
+```
+
+省略 `--case` 可在同一种子下检查整题。改变 `--seed` 会重新生成随机部分，形状和刻意构造的边界保持一致。默认种子为 343。数值判定失败时，评测器会打印含题号、后端、设备、用例编号、种子和提交路径的复测命令。在相同代码和 NumPy 环境下运行即可重建输入。[NumPy 随机数生成器文档](https://numpy.org/doc/stable/reference/random/generator.html)
+
 ## 提交自己的实现
 
 先读题面并按缓冲区、标量和编译期参数顺序编写 `solve`。CUDA 入口声明为 `extern "C" __global__ void solve(...)`，Triton 入口使用 `@triton.jit`。多阶段题的同一文件还需提供题面列出的入口。输出缓冲区由判题器分配，所有数组在设备侧按行连续，题目 02 的 padding 由显式 `pitch` 表示。

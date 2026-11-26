@@ -11,7 +11,8 @@ import sys
 import numpy as np
 
 from workbook.cuda import Device, GpuError, Int, Nvrtc, Ptr
-from workbook.problems import HISTOGRAM_BINS, PROBLEMS, ROOT, compaction_counts, partial_histogram
+from workbook.practice import command_line, start
+from workbook.problems import DEFAULT_SEED, HISTOGRAM_BINS, PROBLEMS, ROOT, compaction_counts, partial_histogram
 
 
 TRITON_TYPES = {np.dtype("float32"): "*fp32", np.dtype("int32"): "*i32"}
@@ -218,7 +219,7 @@ def compare(problem, case, actual):
             np.testing.assert_array_equal(result, expected)
 
 
-def check(device, problems, backends, submission=None):
+def check(device, problems, backends, submission=None, *, seed=DEFAULT_SEED, case_number=None):
     total = failures = 0
     print(f"GPU: {device.name} (sm_{device.capability})", flush=True)
     for problem in problems:
@@ -228,13 +229,20 @@ def check(device, problems, backends, submission=None):
             )
             kernel = compiler(device, problem, submission or problem.path / filename)
             count = errors = 0
-            for case in problem.cases():
+            numbers = (case_number,) if case_number is not None else range(1, len(problem.shapes) + 1)
+            for number in numbers:
+                case = problem.case(number, seed)
                 count += 1
                 try:
                     compare(problem, case, run_case(device, kernel, problem, case))
                 except AssertionError as error:
                     errors += 1
-                    print(f"FAIL {problem.key} {backend} [{case.label}]\n{error}", file=sys.stderr)
+                    replay = ["python", "-m", "workbook.judge", "check", problem.key, "--backend", backend,
+                              "--case", str(number), "--seed", str(seed), "--device", str(device.ordinal)]
+                    if submission:
+                        replay.extend(["--submission", str(submission)])
+                    print(f"FAIL {problem.key} {backend} case {number} [{case.label}]\n{error}", file=sys.stderr)
+                    print("Replay:", command_line(replay), file=sys.stderr)
             total += count
             failures += errors
             print(f"{problem.key} {backend:<6} {count - errors:2}/{count:<2}  {problem.title}", flush=True)
@@ -246,23 +254,51 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list", help="show all exercises")
+    setup = commands.add_parser("start", help="create a starter file with all required entry points")
+    setup.add_argument("problem", choices=PROBLEMS)
+    setup.add_argument("--backend", choices=("cuda", "triton"), required=True)
+    setup.add_argument("--dir", type=Path, default=Path("submissions"))
+    cases = commands.add_parser("cases", help="list numbered cases and their dimensions")
+    cases.add_argument("problem", choices=PROBLEMS)
     test = commands.add_parser("check", help="run cases on a real GPU")
     test.add_argument("problem", choices=("all", *PROBLEMS))
     test.add_argument("--backend", choices=("cuda", "triton", "both"), default="both")
     test.add_argument("--device", type=int, default=0, help="CUDA device ordinal")
     test.add_argument("--submission", type=Path, help="a trusted CUDA or Triton source file")
+    test.add_argument("--case", type=int, help="run one numbered case for a single exercise")
+    test.add_argument("--seed", type=int, default=DEFAULT_SEED, help="base seed for test data (default 343)")
     args = parser.parse_args()
     if args.command == "list":
         for problem in PROBLEMS.values():
             print(f"{problem.key}  {problem.title} ({len(problem.shapes)} cases)")
         return 0
+    if args.command == "cases":
+        for number, dims in enumerate(PROBLEMS[args.problem].shapes, 1):
+            print(f"{number:2}  " + " x ".join(map(str, dims)))
+        return 0
+    if args.command == "start":
+        problem = PROBLEMS[args.problem]
+        try:
+            path = start(problem, args.backend, args.dir)
+        except FileExistsError:
+            parser.error("Starter already exists. Continue editing it or choose a different --dir.")
+        except OSError as error:
+            parser.error(str(error))
+        print(f"Exercise: {problem.path / 'README.md'}\nStarter: {path}")
+        print(command_line(["python", "-m", "workbook.judge", "check", problem.key,
+                            "--backend", args.backend, "--submission", str(path)]))
+        return 0
+    if args.seed < 0:
+        parser.error("--seed must be nonnegative.")
+    if args.case is not None and (args.problem == "all" or not 1 <= args.case <= len(PROBLEMS[args.problem].shapes)):
+        parser.error("--case needs one exercise and a number shown by the cases command.")
     if args.submission and (args.problem == "all" or args.backend == "both"):
         parser.error("--submission needs one problem and either --backend cuda or --backend triton.")
     problems = list(PROBLEMS.values()) if args.problem == "all" else [PROBLEMS[args.problem]]
     backends = ("cuda", "triton") if args.backend == "both" else (args.backend,)
     try:
         with Device(args.device) as device:
-            return check(device, problems, backends, args.submission)
+            return check(device, problems, backends, args.submission, seed=args.seed, case_number=args.case)
     except (GpuError, OSError, AttributeError) as error:
         print(f"GPU judge: {error}", file=sys.stderr)
         return 2
