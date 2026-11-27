@@ -5,6 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
+from workbook.graphs import frontier_case, locate_case, triangle_case
+
 
 ROOT = Path(__file__).resolve().parent.parent
 HISTOGRAM_BINS = 64
@@ -79,6 +81,12 @@ class Problem:
             return (n, 1, 1), {"BLOCK": 128}
         if self.key == "16":
             return (n, 1, 1), {"TOKENS": 32}
+        if self.key == "17":
+            return (ceil_div(dims[1], 128), 1, 1), {"BLOCK": 128, "STEPS": n.bit_length()}
+        if self.key == "18":
+            return (n, 1, 1), {"BLOCK": 64, "STEPS": n.bit_length()}
+        if self.key == "19":
+            return (n, 1, 1), {"BLOCK": 128}
         columns = dims[1]
         return (n, 1, 1), {"BLOCK": 1 << (columns - 1).bit_length()}
 
@@ -422,5 +430,11 @@ PROBLEMS = {
         Problem("16", "streaming-decode", "Prefix-limited streaming decode attention", decode_case,
                 ((0, 11), (4, 0), (7, 1), (7, 31), (7, 32), (7, 33), (9, 129), (14, 513)),
                 cuda_block=(32, 1, 1)),
+        Problem("17", "csr-locate", "Locate packed positions in ragged rows", locate_case,
+                ((0, 0), (0, 7), (1, 9), (8, 0), (9, 127), (33, 129), (513, 4097)), cuda_block=(128, 1, 1)),
+        Problem("18", "triangle-census", "Forward-CSR triangle census", triangle_case,
+                ((0, 0), (1, 100), (7, 0), (4, 100), (33, 23), (81, 100), (151, 8)), cuda_block=(64, 1, 1)),
+        Problem("19", "frontier-parents", "Deterministic BFS frontier parents", frontier_case,
+                ((0, 0), (1, 0), (4, 0), (8, 3), (31, 32), (65, 129), (91, 513)), cuda_block=(128, 1, 1)),
     )
 }
