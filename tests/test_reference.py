@@ -1,9 +1,11 @@
 """Independent hand-calculated examples. Run on a machine without a GPU."""
 
 import unittest
+from unittest.mock import Mock
 
 import numpy as np
 
+from workbook.cuda import Device
 from workbook.judge import compare
 from workbook.problems import (
     PROBLEMS, Case, compaction_counts, csr_spmv, halo_blur, hierarchical_sum, histogram_counts,
@@ -13,6 +15,16 @@ from workbook.problems import (
 
 
 class ReferenceTests(unittest.TestCase):
+    def test_unwritten_int_output_differs_from_missing_index(self):
+        device = Device(0)
+        device.alloc = Mock(return_value=0)
+        device.clear = Mock(return_value=0)
+        device.free = Mock(return_value=0)
+        with device.buffer(np.empty(4, dtype=np.int32)):
+            fill = device.clear.call_args.args[1]
+            initial = np.frombuffer(bytes([fill]) * 4, dtype=np.int32)[0]
+            self.assertNotEqual(initial, -1)
+
     def test_strided_affine_skips_unselected_values(self):
         values = np.array([99, 2, 99, 5, 99, -1], dtype=np.float32)
         np.testing.assert_array_equal(strided_affine(values, 3, 2, 1), [1, 7, -5])

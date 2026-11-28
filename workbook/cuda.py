@@ -114,7 +114,9 @@ class Device:
                 if upload:
                     self.check(self.upload(pointer, array.ctypes.data, array.nbytes), "Upload input")
                 else:
-                    self.check(self.clear(pointer, 0xFF, array.nbytes), "Poison output")
+                    # All-one bits give a NaN for floats but a valid missing-index sentinel for ints.
+                    fill = 0xFF if array.dtype.kind == "f" else 0xA5
+                    self.check(self.clear(pointer, fill, array.nbytes), "Poison output")
             yield pointer
         finally:
             self.free(pointer)

@@ -1,6 +1,6 @@
 # GPU Kernel Workbook
 
-Nineteen progressively harder GPU programming exercises, each with a CUDA C++ solution, a Triton solution, and the same deterministic judge. Start with memory access and warp primitives, then tackle multi-launch reductions, masked operators, sparse gathers, stream compaction and three inference kernels. Finish with sparse graph search, triangle counting and breadth-first traversal. The judge compiles and runs native GPU code without PyTorch.
+Twenty-two progressively harder GPU programming exercises, each with a CUDA C++ solution, a Triton solution, and the same deterministic judge. Start with memory access and warp primitives, then tackle multi-launch reductions, masked operators, sparse gathers, stream compaction and three inference kernels. Later exercises cover graph traversal, stable sorting and merging, and segmented scans. The judge compiles and runs native GPU code without PyTorch.
 
 一套由浅入深的 GPU 编程练习题。每题包括中文题面、输入输出协议、提示、CUDA/Triton 双参考答案和可运行测试。
 
@@ -25,6 +25,9 @@ Nineteen progressively harder GPU programming exercises, each with a CUDA C++ so
 | 17 | [压紧数组的行号与行内位置](problems/17-csr-locate/) | CSR 偏移、重复边界、并行二分 |
 | 18 | [按最小顶点计数三角形](problems/18-triangle-census/) | 有向邻接表、交集、块内归约 |
 | 19 | [BFS 下一层的确定性父节点](problems/19-frontier-parents/) | 入边遍历、前沿快照、最小父节点 |
+| 20 | [有符号键的稳定行排序](problems/20-stable-row-sort/) | 双调排序、稳定平局、极值补位 |
+| 21 | [按输出排名并行归并](problems/21-stable-merge/) | 有序流分界、并行二分、来源索引 |
+| 22 | [跨窗口的分段前缀和](problems/22-segmented-scan/) | 结合律、段首标记、跨窗口进位 |
 
 ## Quick start · 快速上手
 
@@ -92,12 +95,12 @@ python -m workbook.judge check 04 --backend triton --submission my_scan.py
 
 GitHub Actions 会在 Windows 和 Linux 上运行 CPU 参考测试；GPU 真机结果单独验证。
 
-- 两个 GPU 后端共用 139 个确定性用例和 NumPy 对照实现，另有明确写出期望结果的 CPU 测试。
+- 两个 GPU 后端共用 160 个确定性用例和 NumPy 对照实现，另有明确写出期望结果的 CPU 测试。
 - 检查空输入、非整块尾部、带 NaN 的 padding、全负行、跨 warp 平局、超过百万元素的多轮归约、大 logits 和空 Softmax 前缀，以及 CSR 长短行、Top‑2 重复分值和跨 block 稳定写回。
 - 整数与可精确比较的浮点例使用精确判定。全局浮点求和、Softmax、RMSNorm 和流式注意力使用误差容限。遮罩输出和空注意力头须为精确的零。多阶段题检查约定的中间缓冲区。
 - 评测使用 NVRTC 或 Triton 编译出 CUBIN，再通过 CUDA Driver API 启动。Triton 版本锁定在 3.3 系列，因为本地启动适配该版本的 ABI。
 
-Windows 实测环境为 RTX 3060 Laptop GPU（SM 8.6）、CUDA Toolkit 12.6、Python 3.11 和 Triton Windows 3.3.1。两种实现通过 278 项 GPU 检查，Compute Sanitizer memcheck 报告 0 项错误。可用以下命令复做内存检查。
+Windows 实测环境为 RTX 3060 Laptop GPU（SM 8.6）、CUDA Toolkit 12.6、Python 3.11 和 Triton Windows 3.3.1。两种实现通过 320 项 GPU 检查，Compute Sanitizer memcheck 报告 0 项错误。可用以下命令复做内存检查。
 
 ```sh
 compute-sanitizer --tool memcheck --error-exitcode 99 python -m workbook.judge check all --backend both

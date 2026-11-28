@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from workbook.graphs import frontier_case, locate_case, triangle_case
+from workbook.ordering import merge_case, segment_case, sort_case
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -86,6 +87,12 @@ class Problem:
         if self.key == "18":
             return (n, 1, 1), {"BLOCK": 64, "STEPS": n.bit_length()}
         if self.key == "19":
+            return (n, 1, 1), {"BLOCK": 128}
+        if self.key == "20":
+            return (n, 1, 1), {"BLOCK": 1 << (max(1, dims[1]) - 1).bit_length()}
+        if self.key == "21":
+            return (ceil_div(sum(dims), 128), 1, 1), {"BLOCK": 128, "STEPS": min(dims).bit_length()}
+        if self.key == "22":
             return (n, 1, 1), {"BLOCK": 128}
         columns = dims[1]
         return (n, 1, 1), {"BLOCK": 1 << (columns - 1).bit_length()}
@@ -436,5 +443,11 @@ PROBLEMS = {
                 ((0, 0), (1, 100), (7, 0), (4, 100), (33, 23), (81, 100), (151, 8)), cuda_block=(64, 1, 1)),
         Problem("19", "frontier-parents", "Deterministic BFS frontier parents", frontier_case,
                 ((0, 0), (1, 0), (4, 0), (8, 3), (31, 32), (65, 129), (91, 513)), cuda_block=(128, 1, 1)),
+        Problem("20", "stable-row-sort", "Stable signed row argsort", sort_case,
+                ((0, 7), (3, 0), (3, 1), (5, 31), (7, 129), (6, 513), (9, 1024)), cuda_block=(128, 1, 1)),
+        Problem("21", "stable-merge", "Stable merge by output rank", merge_case,
+                ((0, 0), (0, 131), (257, 0), (1, 1), (5, 509), (257, 257), (8191, 4097)), cuda_block=(128, 1, 1)),
+        Problem("22", "segmented-scan", "Row-wise segmented inclusive scan", segment_case,
+                ((0, 5), (5, 0), (5, 1), (6, 127), (7, 128), (8, 129), (9, 2051)), cuda_block=(128, 1, 1)),
     )
 }
